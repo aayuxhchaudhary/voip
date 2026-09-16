@@ -1,61 +1,35 @@
 package com.test.voip.dto;
 
+// Request body payload to initiate a SIP call
 public class CallRequestDto {
 
-    private String ani;
-    private String calleeUser;
-    private String targetIp;
-    private Integer targetPort = 5060;
+    // Caller number / ANI (Caller ID)
+    private String caller;
+
+    // Callee number / extension to ring
+    private String callee;
 
     public CallRequestDto() {
     }
 
-    public CallRequestDto(String ani, String calleeUser, String targetIp, Integer targetPort) {
-        this.ani = ani;
-        this.calleeUser = calleeUser;
-        this.targetIp = targetIp;
-        this.targetPort = (targetPort != null && targetPort > 0) ? targetPort : 5060;
+    public CallRequestDto(String caller, String callee) {
+        this.caller = caller;
+        this.callee = callee;
     }
 
-    public String getAni() {
-        return ani;
+    public String getCaller() {
+        return caller;
     }
 
-    public void setAni(String ani) {
-        this.ani = ani;
+    public void setCaller(String caller) {
+        this.caller = caller;
     }
 
-    public String getCalleeUser() {
-        return calleeUser;
+    public String getCallee() {
+        return callee;
     }
 
-    public void setCalleeUser(String calleeUser) {
-        this.calleeUser = calleeUser;
-    }
-
-    public String getTargetIp() {
-        return targetIp;
-    }
-
-    public void setTargetIp(String targetIp) {
-        this.targetIp = targetIp;
-    }
-
-    public Integer getTargetPort() {
-        return targetPort != null && targetPort > 0 ? targetPort : 5060;
-    }
-
-    public void setTargetPort(Integer targetPort) {
-        this.targetPort = targetPort;
-    }
-
-    @Override
-    public String toString() {
-        return "CallRequestDto{" +
-                "ani='" + ani + '\'' +
-                ", calleeUser='" + calleeUser + '\'' +
-                ", targetIp='" + targetIp + '\'' +
-                ", targetPort=" + targetPort +
-                '}';
+    public void setCallee(String callee) {
+        this.callee = callee;
     }
 }

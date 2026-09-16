@@ -1,28 +1,40 @@
 package com.test.voip.dto;
 
+// Standard JSON response returned by the API
 public class CallResponseDto {
 
+    // True if INVITE was sent successfully
     private boolean success;
+
+    // Status or error message
     private String message;
+
+    // Unique SIP Call-ID header
     private String callId;
-    private String ani;
+
+    // Caller ANI
+    private String caller;
+
+    // Destination user/extension
     private String callee;
 
     public CallResponseDto() {
     }
 
-    public CallResponseDto(boolean success, String message, String callId, String ani, String callee) {
+    public CallResponseDto(boolean success, String message, String callId, String caller, String callee) {
         this.success = success;
         this.message = message;
         this.callId = callId;
-        this.ani = ani;
+        this.caller = caller;
         this.callee = callee;
     }
 
-    public static CallResponseDto ok(String message, String callId, String ani, String callee) {
-        return new CallResponseDto(true, message, callId, ani, callee);
+    // Success response helper
+    public static CallResponseDto ok(String message, String callId, String caller, String callee) {
+        return new CallResponseDto(true, message, callId, caller, callee);
     }
 
+    // Error response helper
     public static CallResponseDto error(String message) {
         return new CallResponseDto(false, message, null, null, null);
     }
@@ -51,12 +63,12 @@ public class CallResponseDto {
         this.callId = callId;
     }
 
-    public String getAni() {
-        return ani;
+    public String getCaller() {
+        return caller;
     }
 
-    public void setAni(String ani) {
-        this.ani = ani;
+    public void setCaller(String caller) {
+        this.caller = caller;
     }
 
     public String getCallee() {

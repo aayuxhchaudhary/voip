@@ -19,34 +19,50 @@ import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Properties;
-import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class SipCallService implements SipListener {
 
     private static final Logger log = LoggerFactory.getLogger(SipCallService.class);
 
+    // RFC 3261 magic cookie required for SIP transaction branch IDs
+    private static final String MAGIC_COOKIE = "z9hG4bK";
+
+    // Local IP and UDP port to listen for incoming SIP packets
     @Value("${sip.local.bind-ip:0.0.0.0}")
     private String bindIp;
 
-    @Value("${sip.local.port:5060}")
+    @Value("${sip.local.port:5070}")
     private int localPort;
 
+    // Contact IP advertised in SIP headers so other side knows where to reply
     @Value("${sip.local.contact-ip:127.0.0.1}")
     private String contactIp;
 
     @Value("${sip.stack.trace-level:32}")
     private String traceLevel;
 
-    private SipFactory sipFactory;
+    // Exception messages loaded from application.properties
+    @Value("${sip.exception.bind-failed:Failed to bind UDP Listening Point}")
+    private String bindFailedMessage = "Failed to bind UDP Listening Point";
+
+    @Value("${sip.exception.stack-start-failed:Could not start SIP signaling stack}")
+    private String stackStartFailedMessage = "Could not start SIP signaling stack";
+
+    // JAIN-SIP stack components
     private SipStack sipStack;
     private SipProvider sipProvider;
     private ListeningPoint listeningPoint;
 
+    // Pre-cached factories and headers for speed
     private HeaderFactory headerFactory;
     private AddressFactory addressFactory;
     private MessageFactory messageFactory;
+    private ContentTypeHeader sdpContentType;
+    private MaxForwardsHeader maxForwardsHeader;
 
+    // Initialize SIP stack on Spring Boot startup
     @PostConstruct
     public void init() {
         try {
@@ -54,9 +70,10 @@ public class SipCallService implements SipListener {
                 contactIp = InetAddress.getLocalHost().getHostAddress();
             }
 
-            sipFactory = SipFactory.getInstance();
+            SipFactory sipFactory = SipFactory.getInstance();
             sipFactory.setPathName("gov.nist");
 
+            // Stack configuration: route internal NIST logs into SLF4J
             Properties properties = new Properties();
             properties.setProperty("javax.sip.STACK_NAME", "VoipSignalingStack");
             properties.setProperty("gov.nist.javax.sip.TRACE_LEVEL", traceLevel);
@@ -67,10 +84,14 @@ public class SipCallService implements SipListener {
 
             sipStack = sipFactory.createSipStack(properties);
 
+            // Reusable factories
             headerFactory = sipFactory.createHeaderFactory();
             addressFactory = sipFactory.createAddressFactory();
             messageFactory = sipFactory.createMessageFactory();
+            sdpContentType = headerFactory.createContentTypeHeader("application", "sdp");
+            maxForwardsHeader = headerFactory.createMaxForwardsHeader(70);
 
+            // Bind UDP port, auto-fallback to next port if port is busy
             int attempts = 0;
             int portToTry = localPort;
             while (attempts < 5) {
@@ -89,51 +110,59 @@ public class SipCallService implements SipListener {
             }
 
             if (listeningPoint == null) {
-                throw new IllegalStateException("Failed to bind UDP Listening Point after multiple attempts");
+                throw new IllegalStateException(bindFailedMessage);
             }
 
+            // Register this class as listener for SIP events
             sipProvider = sipStack.createSipProvider(listeningPoint);
             sipProvider.addSipListener(this);
 
-            log.info("Local SIP Contact IP: {}, Bound Port: {}", contactIp, this.localPort);
+            log.info("SIP signaling bound to {}:{}", contactIp, this.localPort);
 
         } catch (Exception e) {
             log.error("Failed to initialize JAIN-SIP stack: {}", e.getMessage(), e);
-            throw new IllegalStateException("Could not start SIP signaling stack", e);
+            throw new IllegalStateException(stackStartFailedMessage, e);
         }
     }
 
-    public String makeSingleCall(String callerAni, String calleeUsername, String calleeIp, int calleePort) throws Exception {
-        SipURI requestUri = addressFactory.createSipURI(calleeUsername, calleeIp);
-        requestUri.setPort(calleePort);
+    // Build and send SIP INVITE packet over UDP
+    public String makeSingleCall(String caller, String callee, String targetIp, int targetPort) throws Exception {
+        // Destination address (Request-URI)
+        SipURI requestUri = addressFactory.createSipURI(callee, targetIp);
+        requestUri.setPort(targetPort);
 
-        SipURI fromUri = addressFactory.createSipURI(callerAni, contactIp);
+        // Caller identity (From header)
+        SipURI fromUri = addressFactory.createSipURI(caller, contactIp);
         fromUri.setPort(localPort);
         Address fromAddress = addressFactory.createAddress(fromUri);
-        fromAddress.setDisplayName(callerAni);
-        String fromTag = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        fromAddress.setDisplayName(caller);
+        String fromTag = Long.toHexString(ThreadLocalRandom.current().nextLong());
         FromHeader fromHeader = headerFactory.createFromHeader(fromAddress, fromTag);
 
-        SipURI toUri = addressFactory.createSipURI(calleeUsername, calleeIp);
-        toUri.setPort(calleePort);
+        // Callee identity (To header)
+        SipURI toUri = addressFactory.createSipURI(callee, targetIp);
+        toUri.setPort(targetPort);
         Address toAddress = addressFactory.createAddress(toUri);
-        toAddress.setDisplayName(calleeUsername);
+        toAddress.setDisplayName(callee);
         ToHeader toHeader = headerFactory.createToHeader(toAddress, null);
 
-        ArrayList<ViaHeader> viaHeaders = new ArrayList<>();
-        String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
+        // Routing path and transaction branch (Via header)
+        ArrayList<ViaHeader> viaHeaders = new ArrayList<>(1);
+        String branch = MAGIC_COOKIE + Long.toHexString(ThreadLocalRandom.current().nextLong());
         ViaHeader viaHeader = headerFactory.createViaHeader(contactIp, localPort, "udp", branch);
         viaHeaders.add(viaHeader);
 
+        // Globally unique ID for this call and sequence counter
         CallIdHeader callIdHeader = sipProvider.getNewCallId();
         CSeqHeader cSeqHeader = headerFactory.createCSeqHeader(1L, Request.INVITE);
-        MaxForwardsHeader maxForwardsHeader = headerFactory.createMaxForwardsHeader(70);
 
-        SipURI contactAddressUri = addressFactory.createSipURI(callerAni, contactIp);
+        // Direct return socket address (Contact header)
+        SipURI contactAddressUri = addressFactory.createSipURI(caller, contactIp);
         contactAddressUri.setPort(localPort);
         Address contactAddress = addressFactory.createAddress(contactAddressUri);
         ContactHeader contactHeader = headerFactory.createContactHeader(contactAddress);
 
+        // Assemble the SIP INVITE request
         Request inviteRequest = messageFactory.createRequest(
                 requestUri,
                 Request.INVITE,
@@ -146,57 +175,41 @@ public class SipCallService implements SipListener {
         );
         inviteRequest.addHeader(contactHeader);
 
-        ContentTypeHeader contentTypeHeader = headerFactory.createContentTypeHeader("application", "sdp");
-        String sdpBody = "v=0\r\n" +
-                "o=" + callerAni + " 123456 654321 IN IP4 " + contactIp + "\r\n" +
-                "s=Talk\r\n" +
-                "c=IN IP4 " + contactIp + "\r\n" +
-                "t=0 0\r\n" +
-                "m=audio 8000 RTP/AVP 0\r\n" +
-                "a=rtpmap:0 PCMU/8000\r\n";
+        // SDP audio payload: G.711u (PCMU) on port 8000
+        String sdp = new StringBuilder(180)
+                .append("v=0\r\no=").append(caller).append(" 123456 654321 IN IP4 ").append(contactIp)
+                .append("\r\ns=Talk\r\nc=IN IP4 ").append(contactIp)
+                .append("\r\nt=0 0\r\nm=audio 8000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
+                .toString();
 
-        inviteRequest.setContent(sdpBody.getBytes(StandardCharsets.UTF_8), contentTypeHeader);
+        inviteRequest.setContent(sdp.getBytes(StandardCharsets.UTF_8), sdpContentType);
 
+        // Send UDP packet
         ClientTransaction clientTransaction = sipProvider.getNewClientTransaction(inviteRequest);
         clientTransaction.sendRequest();
 
+        log.info("Dispatched INVITE Call-ID: {} to {}@{}:{}", callIdHeader.getCallId(), callee, targetIp, targetPort);
         return callIdHeader.getCallId();
     }
 
+    // Handle responses (100 Trying, 180 Ringing, 200 OK)
     @Override
     public void processResponse(ResponseEvent responseEvent) {
         Response response = responseEvent.getResponse();
         int statusCode = response.getStatusCode();
         CallIdHeader callIdHeader = (CallIdHeader) response.getHeader(CallIdHeader.NAME);
-        String callId = (callIdHeader != null) ? callIdHeader.getCallId() : "UNKNOWN";
+        String callId = (callIdHeader != null) ? callIdHeader.getCallId() : "";
 
-        log.info("[SIP INBOUND RESPONSE] Status: {} {} | Call-ID: {}",
-                statusCode, response.getReasonPhrase(), callId);
+        log.info("SIP Response: {} {} | Call-ID: {}", statusCode, response.getReasonPhrase(), callId);
 
-        switch (statusCode) {
-            case Response.TRYING:
-                log.info(">> [100 Trying] Remote endpoint is processing the INVITE for Call-ID: {}", callId);
-                break;
-
-            case Response.RINGING:
-                log.info(">> [180 Ringing] Remote user phone is currently ringing! Call-ID: {}", callId);
-                break;
-
-            case Response.OK:
-                log.info(">> [200 OK] Call answered! Completing handshake by sending SIP ACK...");
-                handle200Ok(responseEvent, response);
-                break;
-
-            default:
-                if (statusCode >= 300) {
-                    log.warn(">> [SIP Warning/Error] Received status code {} ({}) for Call-ID: {}",
-                            statusCode, response.getReasonPhrase(), callId);
-                }
-                break;
+        // If callee answered (200 OK), send ACK to complete 3-way handshake
+        if (statusCode == Response.OK) {
+            sendAck(responseEvent, response);
         }
     }
 
-    private void handle200Ok(ResponseEvent responseEvent, Response response) {
+    // Send ACK to establish active call session
+    private void sendAck(ResponseEvent responseEvent, Response response) {
         try {
             Dialog dialog = responseEvent.getDialog();
             if (dialog == null && responseEvent.getClientTransaction() != null) {
@@ -206,52 +219,42 @@ public class SipCallService implements SipListener {
             if (dialog != null) {
                 CSeqHeader cSeqHeader = (CSeqHeader) response.getHeader(CSeqHeader.NAME);
                 long seqNumber = (cSeqHeader != null) ? cSeqHeader.getSeqNumber() : 1L;
-
                 Request ackRequest = dialog.createAck(seqNumber);
                 dialog.sendAck(ackRequest);
-                log.info(">> [SIP ACK] Successfully sent ACK on Dialog ID: {} for Call-ID: {}",
-                        dialog.getDialogId(), dialog.getCallId().getCallId());
-            } else {
-                log.warn(">> [SIP ACK] Dialog is null on 200 OK response; unable to send in-dialog ACK directly.");
+                log.info("Sent ACK for Call-ID: {}", dialog.getCallId().getCallId());
             }
         } catch (Exception e) {
-            log.error(">> [SIP ACK Error] Failed to create or dispatch ACK request: {}", e.getMessage(), e);
+            log.error("Failed to send ACK: {}", e.getMessage(), e);
         }
     }
 
     @Override
     public void processRequest(RequestEvent requestEvent) {
         Request request = requestEvent.getRequest();
-        log.info("[SIP INBOUND REQUEST] Method: {} | RequestURI: {}",
-                request.getMethod(), request.getRequestURI());
+        log.info("Incoming Request: {} {}", request.getMethod(), request.getRequestURI());
     }
 
     @Override
     public void processTimeout(TimeoutEvent timeoutEvent) {
-        log.warn("[SIP TIMEOUT] Transaction timed out. IsServerTransaction: {}",
-                timeoutEvent.isServerTransaction());
+        log.warn("SIP transaction timeout");
     }
 
     @Override
     public void processIOException(IOExceptionEvent exceptionEvent) {
-        log.error("[SIP IO ERROR] Network I/O issue on host: {}, port: {}, transport: {}",
-                exceptionEvent.getHost(), exceptionEvent.getPort(), exceptionEvent.getTransport());
+        log.error("SIP IO error on host: {}, port: {}", exceptionEvent.getHost(), exceptionEvent.getPort());
     }
 
     @Override
     public void processTransactionTerminated(TransactionTerminatedEvent event) {
-        log.debug("[SIP TRANSACTION] Transaction terminated.");
     }
 
     @Override
     public void processDialogTerminated(DialogTerminatedEvent event) {
-        log.info("[SIP DIALOG] Dialog terminated: {}",
-                (event.getDialog() != null) ? event.getDialog().getDialogId() : "N/A");
     }
 
+    // Clean shutdown to release UDP port
     @PreDestroy
     public void stop() {
-        log.info("Stopping SIP stack and releasing UDP sockets...");
         try {
             if (sipStack != null) {
                 if (sipProvider != null) {
@@ -264,9 +267,9 @@ public class SipCallService implements SipListener {
                 }
                 sipStack.stop();
             }
-            log.info("SIP stack stopped cleanly.");
+            log.info("SIP stack stopped");
         } catch (Exception e) {
-            log.warn("Error during SIP stack shutdown: {}", e.getMessage());
+            log.warn("SIP stack stop error: {}", e.getMessage());
         }
     }
 }
