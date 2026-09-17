@@ -45,7 +45,7 @@ public class SipCallController {
     }
 
     // REST endpoint to trigger call from JSON body (supports POST and PUT)
-    @RequestMapping(method = {RequestMethod.POST, RequestMethod.PUT})
+    @RequestMapping(method = {RequestMethod.POST})
     public ResponseEntity<CallResponseDto> initiateCall(@RequestBody CallRequestDto request) {
         // Validate required caller and callee fields
         if (request == null || request.getCaller() == null || request.getCaller().isBlank()) {

@@ -200,11 +200,17 @@ public class SipCallService implements SipListener {
         CallIdHeader callIdHeader = (CallIdHeader) response.getHeader(CallIdHeader.NAME);
         String callId = (callIdHeader != null) ? callIdHeader.getCallId() : "";
 
-        log.info("SIP Response: {} {} | Call-ID: {}", statusCode, response.getReasonPhrase(), callId);
-
-        // If callee answered (200 OK), send ACK to complete 3-way handshake
-        if (statusCode == Response.OK) {
+        if (statusCode == Response.TRYING) {
+            log.info("SIP Response: 100 Trying (Server locating callee) | Call-ID: {}", callId);
+        } else if (statusCode == Response.RINGING) {
+            log.info("SIP Response: 180 Ringing (Remote phone ringing) | Call-ID: {}", callId);
+        } else if (statusCode == Response.OK) {
+            log.info("SIP Response: 200 OK (Call answered) | Call-ID: {}", callId);
             sendAck(responseEvent, response);
+        } else if (statusCode >= 400) {
+            log.warn("SIP Response: {} {} (Call rejected or failed) | Call-ID: {}", statusCode, response.getReasonPhrase(), callId);
+        } else {
+            log.info("SIP Response: {} {} | Call-ID: {}", statusCode, response.getReasonPhrase(), callId);
         }
     }
 
