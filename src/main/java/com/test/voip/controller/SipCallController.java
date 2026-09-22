@@ -45,7 +45,7 @@ public class SipCallController {
     }
 
     // REST endpoint to trigger call from JSON body (supports POST and PUT)
-    @RequestMapping(method = {RequestMethod.POST})
+    @RequestMapping(method = {RequestMethod.POST, RequestMethod.PUT})
     public ResponseEntity<CallResponseDto> initiateCall(@RequestBody CallRequestDto request) {
         // Validate required caller and callee fields
         if (request == null || request.getCaller() == null || request.getCaller().isBlank()) {
@@ -74,6 +74,17 @@ public class SipCallController {
             log.error("Error making SIP call: {}", e.getMessage(), e);
             throw new SipCallException(errorMessage, e);
         }
+    }
+
+    // Terminate an active call, stop RTP, and finalize recording
+    @PostMapping("/hangup")
+    public ResponseEntity<java.util.Map<String, Object>> hangupCall(@RequestParam String callId) {
+        boolean stopped = sipCallService.hangupCall(callId);
+        return ResponseEntity.ok(java.util.Map.of(
+                "callId", callId,
+                "status", stopped ? "CALL_TERMINATED" : "CALL_NOT_FOUND",
+                "message", stopped ? "Call terminated, audio recording saved" : "No active call found with this Call-ID"
+        ));
     }
 
     // Handles validation (400) and call errors (500)
