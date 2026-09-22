@@ -38,6 +38,11 @@ public class AudioAndRtpIntegrationTest {
         assertEquals("+91", countryRepository.resolveDialCode("+999999999999"));
         assertEquals("+91", countryRepository.resolveDialCode(null));
         assertEquals("+91", countryRepository.resolveDialCode(""));
+
+        // Fallback resolution with caller and callee
+        assertEquals("+1", countryRepository.resolveDialCode("13864181000", "46573947a455"));
+        assertEquals("+44", countryRepository.resolveDialCode("userA", "+447911123456"));
+        assertEquals("+91", countryRepository.resolveDialCode("userA", "userB"));
     }
 
     @Test
