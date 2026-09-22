@@ -46,19 +46,25 @@ public class CountryRepository {
         return DEFAULT_COUNTRY_CODE;
     }
 
-    public String resolveDialCode(String dialCode) {
-        if (dialCode == null || dialCode.trim().isEmpty()) {
-            return DEFAULT_COUNTRY_CODE;
+    public Optional<String> matchDialCode(String number) {
+        if (number == null || number.trim().isEmpty()) {
+            return Optional.empty();
         }
-        String cleaned = dialCode.trim().replace(" ", "");
+        String cleaned = number.trim().replace(" ", "");
         if (!cleaned.startsWith("+")) {
             cleaned = "+" + cleaned;
         }
-        Optional<Country> match = findByDialCode(cleaned);
-        if (match.isPresent()) {
-            return match.get().getDialCode();
-        }
-        return DEFAULT_COUNTRY_CODE;
+        return findByDialCode(cleaned).map(Country::getDialCode);
+    }
+
+    public String resolveDialCode(String dialCode) {
+        return matchDialCode(dialCode).orElse(DEFAULT_COUNTRY_CODE);
+    }
+
+    public String resolveDialCode(String primaryNumber, String secondaryNumber) {
+        return matchDialCode(primaryNumber)
+                .or(() -> matchDialCode(secondaryNumber))
+                .orElse(DEFAULT_COUNTRY_CODE);
     }
 
     private Optional<Country> findByDialCode(String dialCode) {

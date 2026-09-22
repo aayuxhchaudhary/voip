@@ -1,4 +1,4 @@
-package com.test.voip.service;
+	package com.test.voip.service;
 
 import com.test.voip.repository.CountryRepository;
 import jakarta.annotation.PostConstruct;
@@ -179,7 +179,7 @@ public class SipCallService implements SipListener {
                 + "\r\nt=0 0\r\nm=audio " + rtpLocalPort + " RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
         inviteRequest.setContent(sdp.getBytes(StandardCharsets.UTF_8), sdpContentType);
 
-        String dialCode = countryRepository.resolveDialCode(callee);
+        String dialCode = countryRepository.resolveDialCode(caller, callee);
         activeCalls.put(callId, new CallContext(callId, targetIp, targetPort, dialCode));
 
         ClientTransaction clientTransaction = sipProvider.getNewClientTransaction(inviteRequest);
@@ -247,7 +247,7 @@ public class SipCallService implements SipListener {
             audioService.startRecording(callId, "FULL_CALL", 8000, 1, 8, false, false);
 
             if (context != null) {
-                rtpService.startRtpStream(callId, endpoint.ip, endpoint.port);
+                rtpService.startRtpStream(callId, context.dialCode, endpoint.ip, endpoint.port);
                 rtpService.startRtpReceiver(callId, rtpLocalPort);
             }
 

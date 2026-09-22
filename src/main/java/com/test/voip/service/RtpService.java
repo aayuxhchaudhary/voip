@@ -59,23 +59,7 @@ public class RtpService {
         this.audioService = audioService;
     }
 
-    public String startRtpStream(String callId, String destIp, int destPort) {
-        String sessionKey = (callId != null && !callId.isBlank()) ? callId : UUID.randomUUID().toString();
-        stopRtpStreamOnly(sessionKey);
-
-        AtomicBoolean running = new AtomicBoolean(true);
-        activeStreams.put(sessionKey, running);
-
-        log.info("RTP keepalive stream started [{}] -> {}:{}", sessionKey, destIp, destPort);
-        executor.submit(() -> streamSilence(sessionKey, destIp, destPort, running));
-        return sessionKey;
-    }
-
     public String startRtpStream(String callId, String dialCode, String destIp, int destPort) {
-        return startRtpStream(callId, destIp, destPort);
-    }
-
-    public String playHoldMusic(String callId, String dialCode, String destIp, int destPort) {
         String sessionKey = (callId != null && !callId.isBlank()) ? callId : UUID.randomUUID().toString();
         stopRtpStreamOnly(sessionKey);
 
@@ -83,7 +67,7 @@ public class RtpService {
         activeStreams.put(sessionKey, running);
 
         String resolved = countryRepository.resolveDialCode(dialCode);
-        log.info("RTP hold music started [{}] -> {}:{} ({})", sessionKey, destIp, destPort, resolved);
+        log.info("RTP stream started [{}] -> {}:{} ({})", sessionKey, destIp, destPort, resolved);
 
         executor.submit(() -> streamAudio(sessionKey, dialCode, resolved, destIp, destPort, running));
         return sessionKey;
@@ -182,29 +166,6 @@ public class RtpService {
         return false;
     }
 
-    private void streamSilence(String sessionKey, String destIp, int destPort, AtomicBoolean running) {
-        try (DatagramSocket socket = new DatagramSocket()) {
-            InetAddress destAddress = InetAddress.getByName(destIp);
-
-            int ssrc = ThreadLocalRandom.current().nextInt();
-            int seq = ThreadLocalRandom.current().nextInt(0, 32768);
-            long ts = ThreadLocalRandom.current().nextLong(0, 1_000_000);
-
-            while (running.get()) {
-                audioService.appendAudio(sessionKey, "CALLER", SILENCE_PCM);
-                sendRtpPacket(socket, destAddress, destPort, SILENCE_ULAW, seq, ts, ssrc);
-                seq = (seq + 1) & 0xFFFF;
-                ts += SILENCE_ULAW.length;
-                Thread.sleep(PTIME_MS);
-            }
-            log.info("RTP silence stream ended [{}]", sessionKey);
-        } catch (Exception e) {
-            log.error("RTP silence stream error [{}]: {}", sessionKey, e.getMessage());
-        } finally {
-            activeStreams.remove(sessionKey);
-        }
-    }
-
     private void streamAudio(String sessionKey, String dialCode, String resolved,
                              String destIp, int destPort, AtomicBoolean running) {
         try (InputStream songStream = resourceService.getAudioStream(dialCode)) {
@@ -220,39 +181,50 @@ public class RtpService {
 
                 AudioFormat format = audioIn.getFormat();
                 boolean is16Bit = format.getSampleSizeInBits() == 16;
-                int readChunkSize = is16Bit ? PAYLOAD_SIZE * 2 : PAYLOAD_SIZE;
-
                 InetAddress destAddress = InetAddress.getByName(destIp);
-                byte[] rawBuffer = new byte[readChunkSize];
+
+                byte[] allRaw = audioIn.readAllBytes();
+                int minBytes = is16Bit ? PAYLOAD_SIZE * 2 : PAYLOAD_SIZE;
 
                 int ssrc = ThreadLocalRandom.current().nextInt();
                 int seq = ThreadLocalRandom.current().nextInt(0, 32768);
                 long ts = ThreadLocalRandom.current().nextLong(0, 1_000_000);
-                int bytesRead;
 
-                while (running.get() && (bytesRead = audioIn.read(rawBuffer)) != -1) {
-                    if (bytesRead == 0) continue;
-
-                    byte[] ulawPayload = is16Bit
-                            ? G711Util.linear16ToMuLaw(rawBuffer, bytesRead)
-                            : G711Util.unsigned8BitToMuLaw(rawBuffer, bytesRead);
-
-                    byte[] recordBytes = is16Bit
-                            ? G711Util.muLawToUnsigned8Bit(ulawPayload, ulawPayload.length)
-                            : Arrays.copyOf(rawBuffer, bytesRead);
-                    audioService.appendAudio(sessionKey, "CALLER", recordBytes);
-
-                    sendRtpPacket(socket, destAddress, destPort, ulawPayload, seq, ts, ssrc);
-                    seq = (seq + 1) & 0xFFFF;
-                    ts += ulawPayload.length;
-                    Thread.sleep(PTIME_MS);
+                if (allRaw.length < minBytes) {
+                    while (running.get()) {
+                        audioService.appendAudio(sessionKey, "CALLER", SILENCE_PCM);
+                        sendRtpPacket(socket, destAddress, destPort, SILENCE_ULAW, seq, ts, ssrc);
+                        seq = (seq + 1) & 0xFFFF;
+                        ts += SILENCE_ULAW.length;
+                        Thread.sleep(PTIME_MS);
+                    }
+                    return;
                 }
 
+                byte[] fullUlaw = is16Bit
+                        ? G711Util.linear16ToMuLaw(allRaw, allRaw.length)
+                        : G711Util.unsigned8BitToMuLaw(allRaw, allRaw.length);
+
+                byte[] fullPcm = is16Bit
+                        ? G711Util.muLawToUnsigned8Bit(fullUlaw, fullUlaw.length)
+                        : allRaw;
+
+                int offset = 0;
                 while (running.get()) {
-                    audioService.appendAudio(sessionKey, "CALLER", SILENCE_PCM);
-                    sendRtpPacket(socket, destAddress, destPort, SILENCE_ULAW, seq, ts, ssrc);
+                    if (offset + PAYLOAD_SIZE > fullUlaw.length) {
+                        offset = 0;
+                    }
+
+                    byte[] ulawPayload = Arrays.copyOfRange(fullUlaw, offset, offset + PAYLOAD_SIZE);
+                    byte[] recordBytes = Arrays.copyOfRange(fullPcm, offset, offset + PAYLOAD_SIZE);
+
+                    audioService.appendAudio(sessionKey, "CALLER", recordBytes);
+                    sendRtpPacket(socket, destAddress, destPort, ulawPayload, seq, ts, ssrc);
+
                     seq = (seq + 1) & 0xFFFF;
-                    ts += SILENCE_ULAW.length;
+                    ts += PAYLOAD_SIZE;
+                    offset += PAYLOAD_SIZE;
+
                     Thread.sleep(PTIME_MS);
                 }
 
