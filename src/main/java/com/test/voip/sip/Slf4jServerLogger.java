@@ -12,18 +12,11 @@ public class Slf4jServerLogger implements ServerLogger {
 
     private static final Logger log = LoggerFactory.getLogger("gov.nist.javax.sip.MESSAGES");
 
-    public Slf4jServerLogger() {
-    }
-
-    @Override
-    public void closeLogFile() {
-    }
-
     @Override
     public void logMessage(SIPMessage message, String from, String to, boolean sender, long time) {
         if (log.isDebugEnabled()) {
-            String dir = sender ? "OUTBOUND -> " : "INBOUND <- ";
-            log.debug("{} From: {}, To: {}\n{}", dir, from, to, message != null ? message.encode() : "null");
+            log.debug("{} From: {}, To: {}\n{}", sender ? "OUT ->" : "IN <-", from, to,
+                    message != null ? message.encode() : "null");
         }
     }
 
@@ -37,16 +30,8 @@ public class Slf4jServerLogger implements ServerLogger {
         logMessage(message, from, to, sender, System.currentTimeMillis());
     }
 
-    @Override
-    public void logException(Exception ex) {
-        log.error("SIP ServerLogger Exception: {}", ex.getMessage(), ex);
-    }
-
-    @Override
-    public void setStackProperties(Properties properties) {
-    }
-
-    @Override
-    public void setSipStack(SipStack sipStack) {
-    }
+    @Override public void logException(Exception ex) { log.error("SIP server error: {}", ex.getMessage(), ex); }
+    @Override public void closeLogFile() { }
+    @Override public void setStackProperties(Properties properties) { }
+    @Override public void setSipStack(SipStack sipStack) { }
 }

@@ -247,7 +247,7 @@ public class SipCallService implements SipListener {
             audioService.startRecording(callId, "FULL_CALL", 8000, 1, 8, false, false);
 
             if (context != null) {
-                rtpService.startRtpStream(callId, context.dialCode, endpoint.ip, endpoint.port);
+                rtpService.startRtpStream(callId, endpoint.ip, endpoint.port);
                 rtpService.startRtpReceiver(callId, rtpLocalPort);
             }
 

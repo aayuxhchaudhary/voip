@@ -5,27 +5,16 @@ public class Country {
     private String dialCode;
     private String songPath;
 
-    public Country() {
-    }
+    public Country() { }
 
     public Country(String dialCode, String songPath) {
         this.dialCode = dialCode;
         this.songPath = songPath;
     }
 
-    public String getDialCode() {
-        return dialCode;
-    }
+    public String getDialCode() { return dialCode; }
+    public void setDialCode(String dialCode) { this.dialCode = dialCode; }
 
-    public void setDialCode(String dialCode) {
-        this.dialCode = dialCode;
-    }
-
-    public String getSongPath() {
-        return songPath;
-    }
-
-    public void setSongPath(String songPath) {
-        this.songPath = songPath;
-    }
+    public String getSongPath() { return songPath; }
+    public void setSongPath(String songPath) { this.songPath = songPath; }
 }

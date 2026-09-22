@@ -11,23 +11,22 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/call")
 public class SipCallController {
 
     private static final Logger log = LoggerFactory.getLogger(SipCallController.class);
 
-    // SIP service engine
     private final SipCallService sipCallService;
 
-    // Target SIP server IP and port
     @Value("${sip.server.host:127.0.0.1}")
     private String serverHost;
 
     @Value("${sip.server.port:5060}")
     private int serverPort;
 
-    // Response and error messages from application.properties
     @Value("${sip.message.success:SIP INVITE dispatched successfully}")
     private String successMessage = "SIP INVITE dispatched successfully";
 
@@ -40,14 +39,18 @@ public class SipCallController {
     @Value("${sip.message.missing-callee:Missing required parameter: callee}")
     private String missingCalleeMessage = "Missing required parameter: callee";
 
+    @Value("${sip.message.hangup-success:Call terminated, audio recording saved}")
+    private String hangupSuccessMessage = "Call terminated, audio recording saved";
+
+    @Value("${sip.message.hangup-not-found:No active call found}")
+    private String hangupNotFoundMessage = "No active call found";
+
     public SipCallController(SipCallService sipCallService) {
         this.sipCallService = sipCallService;
     }
 
-    // REST endpoint to trigger call from JSON body (supports POST and PUT)
-    @RequestMapping(method = {RequestMethod.POST, RequestMethod.PUT})
+    @PostMapping
     public ResponseEntity<CallResponseDto> initiateCall(@RequestBody CallRequestDto request) {
-        // Validate required caller and callee fields
         if (request == null || request.getCaller() == null || request.getCaller().isBlank()) {
             throw new SipCallException(missingCallerMessage);
         }
@@ -56,38 +59,29 @@ public class SipCallController {
         }
 
         try {
-            log.info("REST request to start call: caller='{}' -> callee='{}' via target {}:{}",
-                    request.getCaller(), request.getCallee(), serverHost, serverPort);
+            log.info("Call request: {} -> {} via {}:{}", request.getCaller(), request.getCallee(), serverHost, serverPort);
 
-            // Send SIP INVITE to remote PBX/phone
             String callId = sipCallService.makeSingleCall(
-                    request.getCaller().trim(),
-                    request.getCallee().trim(),
-                    serverHost.trim(),
-                    serverPort
-            );
+                    request.getCaller().trim(), request.getCallee().trim(),
+                    serverHost.trim(), serverPort);
 
-            // Return success with call details
             return ResponseEntity.ok(CallResponseDto.ok(successMessage, callId, request.getCaller(), request.getCallee()));
-
         } catch (Exception e) {
-            log.error("Error making SIP call: {}", e.getMessage(), e);
+            log.error("SIP call failed: {}", e.getMessage(), e);
             throw new SipCallException(errorMessage, e);
         }
     }
 
-    // Terminate an active call, stop RTP, and finalize recording
     @PostMapping("/hangup")
-    public ResponseEntity<java.util.Map<String, Object>> hangupCall(@RequestParam String callId) {
+    public ResponseEntity<Map<String, Object>> hangupCall(@RequestParam String callId) {
         boolean stopped = sipCallService.hangupCall(callId);
-        return ResponseEntity.ok(java.util.Map.of(
+        return ResponseEntity.ok(Map.of(
                 "callId", callId,
                 "status", stopped ? "CALL_TERMINATED" : "CALL_NOT_FOUND",
-                "message", stopped ? "Call terminated, audio recording saved" : "No active call found with this Call-ID"
+                "message", stopped ? hangupSuccessMessage : hangupNotFoundMessage
         ));
     }
 
-    // Handles validation (400) and call errors (500)
     @ExceptionHandler(SipCallException.class)
     public ResponseEntity<CallResponseDto> handleSipCallException(SipCallException ex) {
         HttpStatus status = (ex.getCause() != null) ? HttpStatus.INTERNAL_SERVER_ERROR : HttpStatus.BAD_REQUEST;

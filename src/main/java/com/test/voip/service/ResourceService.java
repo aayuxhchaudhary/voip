@@ -18,19 +18,17 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ResourceService {
 
     private static final Logger log = LoggerFactory.getLogger(ResourceService.class);
-    private final CountryRepository countryRepository;
 
-    // Track active audio clips per callId to support multiple concurrent calls safely
+    private final CountryRepository countryRepository;
     private final Map<String, Clip> activeClips = new ConcurrentHashMap<>();
 
     public ResourceService(CountryRepository countryRepository) {
         this.countryRepository = countryRepository;
     }
 
-    public InputStream resourceMethod(String dialCode) {
+    public InputStream getAudioStream(String dialCode) {
         String path = countryRepository.getSongPath(dialCode);
         InputStream in = getClass().getClassLoader().getResourceAsStream(path);
-
         if (in == null) {
             String defaultPath = countryRepository.getSongPath(countryRepository.getDefaultCountryCode());
             in = getClass().getClassLoader().getResourceAsStream(defaultPath);
@@ -42,10 +40,10 @@ public class ResourceService {
         stopSong(callId);
 
         String resolved = countryRepository.resolveDialCode(dialCode);
-        log.info("Playing audio tone for dial code '{}' [callId={}]", resolved, callId);
+        log.info("Playing RBT for '{}' [{}]", resolved, callId);
 
         try {
-            InputStream in = resourceMethod(dialCode);
+            InputStream in = getAudioStream(dialCode);
             if (in == null) {
                 log.warn("Audio file missing for dial code: {}", dialCode);
                 return;
@@ -56,7 +54,6 @@ public class ResourceService {
 
             Clip clip = AudioSystem.getClip();
             clip.open(audioIn);
-
             clip.addLineListener(event -> {
                 if (event.getType() == LineEvent.Type.STOP) {
                     clip.close();
@@ -66,7 +63,6 @@ public class ResourceService {
 
             activeClips.put(callId, clip);
             clip.start();
-
         } catch (Exception e) {
             log.warn("Local speaker playback unavailable: {}", e.getMessage());
         }
@@ -79,20 +75,16 @@ public class ResourceService {
             try {
                 clip.stop();
                 clip.close();
-                log.info("Stopped audio playback [callId={}]", callId);
+                log.info("Stopped RBT [{}]", callId);
             } catch (Exception e) {
-                log.warn("Error stopping audio clip: {}", e.getMessage());
+                log.warn("Error stopping clip: {}", e.getMessage());
             }
         }
     }
 
     public void stopAll() {
         activeClips.forEach((id, clip) -> {
-            try {
-                clip.stop();
-                clip.close();
-            } catch (Exception ignored) {
-            }
+            try { clip.stop(); clip.close(); } catch (Exception ignored) { }
         });
         activeClips.clear();
     }

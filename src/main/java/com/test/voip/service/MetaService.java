@@ -27,15 +27,14 @@ public class MetaService {
         String path = countryRepository.getSongPath(resolved);
 
         Map<String, Object> meta = new HashMap<>();
-        try (InputStream in = resourceService.resourceMethod(dialCode)) {
-            if (in == null) {
-                return meta;
-            }
+        try (InputStream in = resourceService.getAudioStream(dialCode)) {
+            if (in == null) return meta;
+
             try (BufferedInputStream bufferedIn = new BufferedInputStream(in);
                  AudioInputStream audioIn = AudioSystem.getAudioInputStream(bufferedIn)) {
                 AudioFormat format = audioIn.getFormat();
                 long frames = audioIn.getFrameLength();
-                double durationSeconds = (frames + 0.0) / format.getFrameRate();
+                double durationSeconds = frames / (double) format.getFrameRate();
 
                 meta.put("dialCode", resolved);
                 meta.put("songFile", path);

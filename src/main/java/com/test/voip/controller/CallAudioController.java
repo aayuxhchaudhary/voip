@@ -23,25 +23,21 @@ public class CallAudioController {
         this.metaService = metaService;
     }
 
-    // List all recordings associated with a SIP Call-ID
     @GetMapping("/call/{callId}")
     public ResponseEntity<List<CallAudio>> getAudioByCallId(@PathVariable String callId) {
         return ResponseEntity.ok(audioService.getAudioByCallId(callId));
     }
 
-    // Stream recorded WAV file from disk for playback
     @GetMapping("/play/{id}")
     public ResponseEntity<byte[]> playAudio(@PathVariable Long id) {
         CallAudio audio = audioService.getAudioById(id);
         byte[] audioBytes = audioService.getAudioBytesById(id);
-
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + audio.getFileName() + "\"")
                 .contentType(MediaType.parseMediaType("audio/wav"))
                 .body(audioBytes);
     }
 
-    // Inspect audio metadata for country dial code
     @GetMapping("/meta")
     public ResponseEntity<Map<String, Object>> getSongMeta(@RequestParam String countryCode) {
         return ResponseEntity.ok(metaService.metaMethod(countryCode));

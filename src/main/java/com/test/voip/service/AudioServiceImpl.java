@@ -39,6 +39,24 @@ public class AudioServiceImpl implements AudioService {
     @Value("${recording.storage-path:./recordings}")
     private String storageLocationPath;
 
+    @Value("${audio.error.save-failed:Failed to save uploaded audio}")
+    private String saveFailed;
+
+    @Value("${audio.error.finalize-failed:Failed to finalize recording}")
+    private String finalizeFailed;
+
+    @Value("${audio.error.not-found:Audio record not found}")
+    private String notFound;
+
+    @Value("${audio.error.file-missing:Audio file missing on disk}")
+    private String fileMissing;
+
+    @Value("${audio.error.read-failed:Failed to read audio file}")
+    private String readFailed;
+
+    @Value("${audio.error.invalid-type:Invalid audioType, must be: CALLEE, CALLER, FULL_CALL, or RBT}")
+    private String invalidType;
+
     private Path storageLocation;
     private final Map<String, RecordingSession> activeRecordings = new ConcurrentHashMap<>();
 
@@ -74,8 +92,8 @@ public class AudioServiceImpl implements AudioService {
 
             return callAudioRepository.save(record);
         } catch (IOException e) {
-            log.error("Failed to save uploaded audio: {}", e.getMessage(), e);
-            throw new RuntimeException("Failed to save uploaded audio", e);
+            log.error("{}: {}", saveFailed, e.getMessage(), e);
+            throw new RuntimeException(saveFailed, e);
         }
     }
 
@@ -155,8 +173,8 @@ public class AudioServiceImpl implements AudioService {
             return saved;
 
         } catch (IOException e) {
-            log.error("Failed to finalize recording {}: {}", key, e.getMessage(), e);
-            throw new RuntimeException("Failed to finalize recording: " + key, e);
+            log.error("{} {}: {}", finalizeFailed, key, e.getMessage(), e);
+            throw new RuntimeException(finalizeFailed + ": " + key, e);
         }
     }
 
@@ -168,7 +186,7 @@ public class AudioServiceImpl implements AudioService {
     @Override
     public CallAudio getAudioById(Long id) {
         return callAudioRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Audio record not found: " + id));
+                .orElseThrow(() -> new RuntimeException(notFound + ": " + id));
     }
 
     @Override
@@ -177,11 +195,11 @@ public class AudioServiceImpl implements AudioService {
         try {
             Path path = Paths.get(audio.getFilePath());
             if (!Files.exists(path)) {
-                throw new RuntimeException("Audio file missing: " + audio.getFilePath());
+                throw new RuntimeException(fileMissing + ": " + audio.getFilePath());
             }
             return Files.readAllBytes(path);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to read audio: " + audio.getFilePath(), e);
+            throw new RuntimeException(readFailed + ": " + audio.getFilePath(), e);
         }
     }
 
@@ -209,7 +227,7 @@ public class AudioServiceImpl implements AudioService {
 
     private void validateAudioType(String audioType) {
         if (!VALID_AUDIO_TYPES.contains(audioType.toUpperCase())) {
-            throw new IllegalArgumentException("audioType must be one of: " + VALID_AUDIO_TYPES);
+            throw new IllegalArgumentException(invalidType);
         }
     }
 

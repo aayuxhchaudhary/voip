@@ -33,10 +33,7 @@ public class SipCallControllerTest {
     }
 
     @Test
-    void testPutCall_Success() throws Exception {
-        Mockito.when(sipCallService.makeSingleCall(eq("13864181000"), eq("userB"), eq("127.0.0.1"), eq(5060)))
-                .thenReturn("test-call-id-12345");
-
+    void testPutCall_MethodNotAllowed() throws Exception {
         String json = """
                 {
                     "caller": "13864181000",
@@ -47,11 +44,7 @@ public class SipCallControllerTest {
         mockMvc.perform(put("/api/call")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.callId").value("test-call-id-12345"))
-                .andExpect(jsonPath("$.caller").value("13864181000"))
-                .andExpect(jsonPath("$.callee").value("userB"));
+                .andExpect(status().isMethodNotAllowed());
     }
 
     @Test
