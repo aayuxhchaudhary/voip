@@ -6,8 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class VoipApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(VoipApplication.class, args);
-	}
-
+    public static void main(String[] args) {
+        SpringApplication.run(VoipApplication.class, args);
+    }
 }

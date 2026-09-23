@@ -1,24 +1,10 @@
 package com.test.voip.service;
 
-import com.test.voip.entity.CallAudio;
+import com.test.voip.entity.BaseAudioRecord;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 public interface AudioService {
-
-    CallAudio saveUploadedRecording(
-            String callId,
-            String audioType,
-            byte[] audioData,
-            float sampleRate,
-            int channels,
-            int sampleSizeInBits,
-            boolean signed,
-            boolean bigEndian,
-            LocalDateTime startTime,
-            LocalDateTime endTime
-    );
 
     void startRecording(
             String callId,
@@ -36,14 +22,18 @@ public interface AudioService {
             byte[] audioData
     );
 
-    CallAudio stopRecording(
+    BaseAudioRecord stopRecording(
             String callId,
             String audioType
     );
 
-    List<CallAudio> getAudioByCallId(String callId);
+    List<BaseAudioRecord> getAudioByCallId(String callId);
 
-    CallAudio getAudioById(Long id);
+    BaseAudioRecord getAudioById(Long id);
+
+    BaseAudioRecord getAudioByIdAndType(Long id, String type);
 
     byte[] getAudioBytesById(Long id);
+
+    byte[] getAudioBytes(BaseAudioRecord audio);
 }

@@ -48,8 +48,7 @@ public class RtpService {
     private final CountryRepository countryRepository;
     private final AudioService audioService;
 
-    private final ExecutorService executor = Executors.newFixedThreadPool(
-            Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+    private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Map<String, AtomicBoolean> activeStreams = new ConcurrentHashMap<>();
     private final Map<String, DatagramSocket> activeReceivers = new ConcurrentHashMap<>();
 
@@ -77,56 +76,66 @@ public class RtpService {
         if (callId == null || callId.isBlank()) return;
         stopReceiver(callId);
 
-        activeReceivers.values().forEach(s -> {
-            try { if (!s.isClosed()) s.close(); } catch (Exception ignored) { }
-        });
-        activeReceivers.clear();
+        try {
+            DatagramSocket socket = new DatagramSocket(null);
+            socket.setReuseAddress(true);
+            socket.bind(new java.net.InetSocketAddress(localPort));
+            activeReceivers.put(callId, socket);
+            log.info("RTP receiver listening on port {} [{}]", localPort, callId);
 
-        executor.submit(() -> {
-            try (DatagramSocket socket = new DatagramSocket(localPort)) {
-                activeReceivers.put(callId, socket);
-                log.info("RTP receiver listening on port {} [{}]", localPort, callId);
-
-                byte[] buf = new byte[1500];
-                int packetCount = 0;
-
-                while (!socket.isClosed()) {
+            executor.submit(() -> {
+                try {
+                    byte[] buf = new byte[1500];
                     DatagramPacket packet = new DatagramPacket(buf, buf.length);
-                    socket.receive(packet);
+                    int packetCount = 0;
 
-                    if (packet.getLength() <= RTP_HEADER_SIZE) continue;
+                    while (!socket.isClosed()) {
+                        packet.setLength(buf.length);
+                        socket.receive(packet);
 
-                    int offset = packet.getOffset();
-                    if ((buf[offset] & 0xC0) != 0x80) continue;
+                        if (packet.getLength() <= RTP_HEADER_SIZE) continue;
 
-                    int payloadLen = packet.getLength() - RTP_HEADER_SIZE;
-                    byte[] ulawPayload = Arrays.copyOfRange(buf, offset + RTP_HEADER_SIZE, offset + packet.getLength());
-                    audioService.appendAudio(callId, "CALLEE", G711Util.muLawToUnsigned8Bit(ulawPayload, payloadLen));
+                        int offset = packet.getOffset();
+                        int b0 = buf[offset] & 0xFF;
+                        if ((b0 & 0xC0) != 0x80) continue;
 
-                    packetCount++;
-                    if (packetCount == 1 || packetCount % 50 == 0) {
-                        log.info("Captured {} callee packets [{}]", packetCount, callId);
+                        int cc = b0 & 0x0F;
+                        int headerSize = RTP_HEADER_SIZE + (cc * 4);
+                        if (packet.getLength() <= headerSize) continue;
+
+                        if ((b0 & 0x10) != 0) {
+                            if (packet.getLength() < headerSize + 4) continue;
+                            int extLen = ((buf[offset + headerSize + 2] & 0xFF) << 8) | (buf[offset + headerSize + 3] & 0xFF);
+                            headerSize += 4 + (extLen * 4);
+                            if (packet.getLength() <= headerSize) continue;
+                        }
+
+                        int payloadLen = packet.getLength() - headerSize;
+                        audioService.appendAudio(callId, "CALLEE", G711Util.muLawToUnsigned8Bit(buf, offset + headerSize, payloadLen));
+
+                        packetCount++;
+                        if (packetCount == 1 || packetCount % 50 == 0) {
+                            log.info("Captured {} callee packets [{}]", packetCount, callId);
+                        }
                     }
+                } catch (Exception e) {
+                    String msg = e.getMessage();
+                    if (msg == null || !msg.toLowerCase().contains("socket closed")) {
+                        log.warn("RTP receiver stopped on port {}: {}", localPort, msg);
+                    }
+                } finally {
+                    activeReceivers.remove(callId);
+                    if (!socket.isClosed()) socket.close();
                 }
-            } catch (Exception e) {
-                String msg = e.getMessage();
-                if (msg == null || !msg.toLowerCase().contains("socket closed")) {
-                    log.warn("RTP receiver stopped on port {}: {}", localPort, msg);
-                }
-            } finally {
-                activeReceivers.remove(callId);
-            }
-        });
+            });
+        } catch (Exception e) {
+            log.error("Failed to bind RTP receiver socket on port {}: {}", localPort, e.getMessage(), e);
+        }
     }
 
     public boolean stopRtp(String sessionKey) {
         if (sessionKey == null) return false;
         return stopRtpStreamOnly(sessionKey) | stopReceiver(sessionKey);
-    }
-
-    public boolean isStreaming(String sessionKey) {
-        AtomicBoolean running = activeStreams.get(sessionKey);
-        return running != null && running.get();
     }
 
     public void stopAll() {
@@ -210,13 +219,16 @@ public class RtpService {
                         : allRaw;
 
                 int offset = 0;
+                byte[] ulawPayload = new byte[PAYLOAD_SIZE];
+                byte[] recordBytes = new byte[PAYLOAD_SIZE];
+
                 while (running.get()) {
                     if (offset + PAYLOAD_SIZE > fullUlaw.length) {
                         offset = 0;
                     }
 
-                    byte[] ulawPayload = Arrays.copyOfRange(fullUlaw, offset, offset + PAYLOAD_SIZE);
-                    byte[] recordBytes = Arrays.copyOfRange(fullPcm, offset, offset + PAYLOAD_SIZE);
+                    System.arraycopy(fullUlaw, offset, ulawPayload, 0, PAYLOAD_SIZE);
+                    System.arraycopy(fullPcm, offset, recordBytes, 0, PAYLOAD_SIZE);
 
                     audioService.appendAudio(sessionKey, "CALLER", recordBytes);
                     sendRtpPacket(socket, destAddress, destPort, ulawPayload, seq, ts, ssrc);
@@ -231,7 +243,9 @@ public class RtpService {
                 log.info("RTP stream completed [{}] ({})", sessionKey, resolved);
             }
         } catch (Exception e) {
-            log.error("RTP stream error [{}]: {}", sessionKey, e.getMessage());
+            if (running.get()) {
+                log.error("RTP stream error [{}]: {}", sessionKey, e.getMessage());
+            }
         } finally {
             activeStreams.remove(sessionKey);
         }

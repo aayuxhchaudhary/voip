@@ -1,7 +1,10 @@
 package com.test.voip.service;
 
-import com.test.voip.entity.CallAudio;
-import com.test.voip.repository.CallAudioRepository;
+import com.test.voip.entity.BaseAudioRecord;
+import com.test.voip.entity.CalleeAudio;
+import com.test.voip.entity.FullCallAudio;
+import com.test.voip.repository.CalleeAudioRepository;
+import com.test.voip.repository.FullCallAudioRepository;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +24,8 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,13 +39,11 @@ public class AudioServiceImpl implements AudioService {
     private static final Set<String> VALID_AUDIO_TYPES = Set.of("CALLEE", "CALLER", "FULL_CALL", "RBT");
     private static final int STALE_THRESHOLD_MINUTES = 30;
 
-    private final CallAudioRepository callAudioRepository;
+    private final FullCallAudioRepository fullCallAudioRepository;
+    private final CalleeAudioRepository calleeAudioRepository;
 
     @Value("${recording.storage-path:./recordings}")
     private String storageLocationPath;
-
-    @Value("${audio.error.save-failed:Failed to save uploaded audio}")
-    private String saveFailed;
 
     @Value("${audio.error.finalize-failed:Failed to finalize recording}")
     private String finalizeFailed;
@@ -60,41 +63,16 @@ public class AudioServiceImpl implements AudioService {
     private Path storageLocation;
     private final Map<String, RecordingSession> activeRecordings = new ConcurrentHashMap<>();
 
-    public AudioServiceImpl(CallAudioRepository callAudioRepository) {
-        this.callAudioRepository = callAudioRepository;
+    public AudioServiceImpl(
+            FullCallAudioRepository fullCallAudioRepository,
+            CalleeAudioRepository calleeAudioRepository) {
+        this.fullCallAudioRepository = fullCallAudioRepository;
+        this.calleeAudioRepository = calleeAudioRepository;
     }
 
     @PostConstruct
     private void initStoragePath() {
         this.storageLocation = Paths.get(storageLocationPath).toAbsolutePath().normalize();
-    }
-
-    @Override
-    public CallAudio saveUploadedRecording(
-            String callId, String audioType, byte[] audioData,
-            float sampleRate, int channels, int sampleSizeInBits,
-            boolean signed, boolean bigEndian,
-            LocalDateTime startTime, LocalDateTime endTime) {
-
-        validateAudioType(audioType);
-
-        try {
-            Path filePath = resolveFilePath(callId, audioType);
-            Files.write(filePath, audioData);
-
-            CallAudio record = buildCallAudio(callId, audioType, filePath, startTime);
-            record.setFileSizeBytes((long) audioData.length);
-            record.setEndTime(endTime);
-
-            if (startTime != null && endTime != null) {
-                record.setDurationSeconds(Duration.between(startTime, endTime).toMillis() / 1000.0);
-            }
-
-            return callAudioRepository.save(record);
-        } catch (IOException e) {
-            log.error("{}: {}", saveFailed, e.getMessage(), e);
-            throw new RuntimeException(saveFailed, e);
-        }
     }
 
     @Override
@@ -121,16 +99,23 @@ public class AudioServiceImpl implements AudioService {
     public void appendAudio(String callId, String audioType, byte[] audioData) {
         if (audioData == null || audioData.length == 0) return;
 
-        String specificKey = createKey(callId, audioType);
-        RecordingSession session = activeRecordings.get(specificKey);
-        if (session != null) {
-            session.appendCaller(audioData);
-            return;
+        boolean isCallee = "CALLEE".equalsIgnoreCase(audioType);
+
+        if (!"FULL_CALL".equalsIgnoreCase(audioType)) {
+            String specificKey = createKey(callId, audioType);
+            RecordingSession specificSession = activeRecordings.get(specificKey);
+            if (specificSession != null) {
+                if (isCallee) {
+                    specificSession.appendCallee(audioData);
+                } else {
+                    specificSession.appendCaller(audioData);
+                }
+            }
         }
 
         RecordingSession fullSession = activeRecordings.get(createKey(callId, "FULL_CALL"));
         if (fullSession != null) {
-            if ("CALLEE".equalsIgnoreCase(audioType)) {
+            if (isCallee) {
                 fullSession.appendCallee(audioData);
             } else {
                 fullSession.appendCaller(audioData);
@@ -139,7 +124,7 @@ public class AudioServiceImpl implements AudioService {
     }
 
     @Override
-    public CallAudio stopRecording(String callId, String audioType) {
+    public BaseAudioRecord stopRecording(String callId, String audioType) {
         String key = createKey(callId, audioType);
         RecordingSession session = activeRecordings.remove(key);
         if (session == null) return null;
@@ -147,8 +132,12 @@ public class AudioServiceImpl implements AudioService {
         try {
             byte[] rawAudio = session.getMixedAudio();
             if (rawAudio.length == 0) {
-                log.warn("No audio captured for {}", key);
-                return null;
+                long elapsedMillis = Math.max(20, Duration.between(session.getStartTime(), LocalDateTime.now()).toMillis());
+                int sampleRate = (int) Math.max(1, session.getFormat().getSampleRate());
+                int silenceBytes = Math.max(160, (int) ((elapsedMillis * sampleRate) / 1000));
+                rawAudio = new byte[silenceBytes];
+                Arrays.fill(rawAudio, (byte) 128);
+                log.info("No audio captured for {}, padded with {} bytes silence", key, silenceBytes);
             }
 
             Path wavPath = resolveFilePath(callId, audioType);
@@ -163,12 +152,13 @@ public class AudioServiceImpl implements AudioService {
 
             double durationSeconds = totalFrames / (double) Math.max(1, (int) format.getSampleRate());
 
-            CallAudio record = buildCallAudio(callId, audioType, wavPath, session.getStartTime());
+            BaseAudioRecord record = createEntityForType(audioType);
+            populateRecord(record, callId, wavPath, session.getStartTime());
             record.setFileSizeBytes(Files.size(wavPath));
             record.setDurationSeconds(durationSeconds);
             record.setEndTime(LocalDateTime.now());
 
-            CallAudio saved = callAudioRepository.save(record);
+            BaseAudioRecord saved = saveRecord(record, audioType);
             log.info("Recording saved: {} | {} | ID: {}", key, wavPath, saved.getId());
             return saved;
 
@@ -179,19 +169,38 @@ public class AudioServiceImpl implements AudioService {
     }
 
     @Override
-    public List<CallAudio> getAudioByCallId(String callId) {
-        return callAudioRepository.findByCallId(callId);
+    public List<BaseAudioRecord> getAudioByCallId(String callId) {
+        List<BaseAudioRecord> list = new ArrayList<>();
+        list.addAll(fullCallAudioRepository.findByCallId(callId));
+        list.addAll(calleeAudioRepository.findByCallId(callId));
+        return list;
     }
 
     @Override
-    public CallAudio getAudioById(Long id) {
-        return callAudioRepository.findById(id)
+    public BaseAudioRecord getAudioById(Long id) {
+        return fullCallAudioRepository.findById(id)
+                .map(BaseAudioRecord.class::cast)
+                .or(() -> calleeAudioRepository.findById(id).map(BaseAudioRecord.class::cast))
+                .orElseThrow(() -> new RuntimeException(notFound + ": " + id));
+    }
+
+    @Override
+    public BaseAudioRecord getAudioByIdAndType(Long id, String type) {
+        if ("CALLEE".equalsIgnoreCase(type)) {
+            return calleeAudioRepository.findById(id)
+                    .orElseThrow(() -> new RuntimeException(notFound + ": " + id));
+        }
+        return fullCallAudioRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException(notFound + ": " + id));
     }
 
     @Override
     public byte[] getAudioBytesById(Long id) {
-        CallAudio audio = getAudioById(id);
+        return getAudioBytes(getAudioById(id));
+    }
+
+    @Override
+    public byte[] getAudioBytes(BaseAudioRecord audio) {
         try {
             Path path = Paths.get(audio.getFilePath());
             if (!Files.exists(path)) {
@@ -207,18 +216,30 @@ public class AudioServiceImpl implements AudioService {
         String folderName = getFolderName(audioType);
         Path folder = storageLocation.resolve(folderName);
         Files.createDirectories(folder);
-        String fileName = callId + "_" + audioType.toLowerCase() + "_" + LocalDateTime.now().format(TIMESTAMP_FMT) + ".wav";
+        String safeCallId = callId.replaceAll("[^a-zA-Z0-9.-]", "_");
+        String fileName = safeCallId + "_" + audioType.toLowerCase() + "_" + LocalDateTime.now().format(TIMESTAMP_FMT) + ".wav";
         return folder.resolve(fileName);
     }
 
-    private CallAudio buildCallAudio(String callId, String audioType, Path filePath, LocalDateTime startTime) {
-        CallAudio record = new CallAudio();
+    private BaseAudioRecord createEntityForType(String audioType) {
+        if ("CALLEE".equalsIgnoreCase(audioType)) {
+            return new CalleeAudio();
+        }
+        return new FullCallAudio();
+    }
+
+    private void populateRecord(BaseAudioRecord record, String callId, Path filePath, LocalDateTime startTime) {
         record.setCallId(callId);
-        record.setAudioType(audioType.toUpperCase());
         record.setFileName(filePath.getFileName().toString());
         record.setFilePath(filePath.toString());
         record.setStartTime(startTime);
-        return record;
+    }
+
+    private BaseAudioRecord saveRecord(BaseAudioRecord record, String audioType) {
+        if ("CALLEE".equalsIgnoreCase(audioType)) {
+            return calleeAudioRepository.save((CalleeAudio) record);
+        }
+        return fullCallAudioRepository.save((FullCallAudio) record);
     }
 
     private String createKey(String callId, String audioType) {
@@ -232,13 +253,7 @@ public class AudioServiceImpl implements AudioService {
     }
 
     private String getFolderName(String audioType) {
-        return switch (audioType.toUpperCase()) {
-            case "CALLEE" -> "callee";
-            case "CALLER" -> "caller";
-            case "FULL_CALL" -> "full-call";
-            case "RBT" -> "rbt";
-            default -> "other";
-        };
+        return "CALLEE".equalsIgnoreCase(audioType) ? "callee" : "full-call";
     }
 
     private void cleanupStaleRecordings() {

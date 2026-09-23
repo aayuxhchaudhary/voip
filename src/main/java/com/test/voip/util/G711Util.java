@@ -53,9 +53,13 @@ public final class G711Util {
     }
 
     public static byte[] muLawToUnsigned8Bit(byte[] ulawBytes, int length) {
+        return muLawToUnsigned8Bit(ulawBytes, 0, length);
+    }
+
+    public static byte[] muLawToUnsigned8Bit(byte[] ulawBytes, int offset, int length) {
         byte[] pcm = new byte[length];
         for (int i = 0; i < length; i++) {
-            int u = (muLawToLinear(ulawBytes[i]) >> 8) + 128;
+            int u = (muLawToLinear(ulawBytes[offset + i]) >> 8) + 128;
             pcm[i] = (byte) Math.max(0, Math.min(255, u));
         }
         return pcm;

@@ -10,9 +10,14 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import com.test.voip.entity.CallDetail;
+import com.test.voip.service.CallDetailService;
+import java.util.List;
+
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -22,11 +27,13 @@ public class SipCallControllerTest {
 
     private MockMvc mockMvc;
     private SipCallService sipCallService;
+    private CallDetailService callDetailService;
 
     @BeforeEach
     void setUp() {
         sipCallService = Mockito.mock(SipCallService.class);
-        SipCallController controller = new SipCallController(sipCallService);
+        callDetailService = Mockito.mock(CallDetailService.class);
+        SipCallController controller = new SipCallController(sipCallService, callDetailService);
         ReflectionTestUtils.setField(controller, "serverHost", "127.0.0.1");
         ReflectionTestUtils.setField(controller, "serverPort", 5060);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
@@ -119,5 +126,63 @@ public class SipCallControllerTest {
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("SIP call failed"));
+    }
+
+    @Test
+    void testHangupCall_Success() throws Exception {
+        Mockito.when(sipCallService.hangupCall("call-123")).thenReturn(true);
+
+        mockMvc.perform(post("/api/call/hangup")
+                        .param("callId", "call-123"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.callId").value("call-123"))
+                .andExpect(jsonPath("$.status").value("CALL_TERMINATED"))
+                .andExpect(jsonPath("$.message").value("Call terminated, audio recording saved"));
+    }
+
+    @Test
+    void testHangupCall_NotFound() throws Exception {
+        Mockito.when(sipCallService.hangupCall("call-unknown")).thenReturn(false);
+
+        mockMvc.perform(post("/api/call/hangup")
+                        .param("callId", "call-unknown"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.callId").value("call-unknown"))
+                .andExpect(jsonPath("$.status").value("CALL_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("No active call found"));
+    }
+
+    @Test
+    void testGetAllCallDetails() throws Exception {
+        CallDetail detail = new CallDetail();
+        detail.setCallId("call-abc");
+        detail.setSrcNumber("101");
+        detail.setDstNumber("102");
+        detail.setStatus("ANSWERED");
+        Mockito.when(callDetailService.getAllCallDetails()).thenReturn(List.of(detail));
+
+        mockMvc.perform(get("/api/call/details"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].callId").value("call-abc"))
+                .andExpect(jsonPath("$[0].srcNumber").value("101"))
+                .andExpect(jsonPath("$[0].dstNumber").value("102"))
+                .andExpect(jsonPath("$[0].status").value("ANSWERED"));
+    }
+
+    @Test
+    void testGetCallDetailByCallId() throws Exception {
+        CallDetail detail = new CallDetail();
+        detail.setCallId("call-abc");
+        detail.setSrcNumber("101");
+        detail.setDstNumber("102");
+        detail.setStatus("ANSWERED");
+        Mockito.when(callDetailService.getCallDetailByCallId("call-abc")).thenReturn(detail);
+
+        mockMvc.perform(get("/api/call/details/call-abc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.callId").value("call-abc"))
+                .andExpect(jsonPath("$.srcNumber").value("101"))
+                .andExpect(jsonPath("$.dstNumber").value("102"))
+                .andExpect(jsonPath("$.status").value("ANSWERED"));
     }
 }

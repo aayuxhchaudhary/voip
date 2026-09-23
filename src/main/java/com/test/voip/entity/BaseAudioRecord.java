@@ -3,9 +3,8 @@ package com.test.voip.entity;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
-@Entity
-@Table(name = "call_audio")
-public class CallAudio {
+@MappedSuperclass
+public abstract class BaseAudioRecord {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -13,9 +12,6 @@ public class CallAudio {
 
     @Column(nullable = false)
     private String callId;
-
-    @Column(nullable = false)
-    private String audioType;
 
     private String fileName;
 
@@ -27,16 +23,13 @@ public class CallAudio {
     private LocalDateTime startTime;
     private LocalDateTime endTime;
 
-    public CallAudio() { }
+    public BaseAudioRecord() { }
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
     public String getCallId() { return callId; }
     public void setCallId(String callId) { this.callId = callId; }
-
-    public String getAudioType() { return audioType; }
-    public void setAudioType(String audioType) { this.audioType = audioType; }
 
     public String getFileName() { return fileName; }
     public void setFileName(String fileName) { this.fileName = fileName; }

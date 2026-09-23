@@ -22,7 +22,7 @@ public class MetaService {
         this.countryRepository = countryRepository;
     }
 
-    public Map<String, Object> metaMethod(String dialCode) {
+    public Map<String, Object> getAudioMeta(String dialCode) {
         String resolved = countryRepository.resolveDialCode(dialCode);
         String path = countryRepository.getSongPath(resolved);
 

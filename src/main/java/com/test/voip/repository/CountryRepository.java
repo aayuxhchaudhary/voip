@@ -31,14 +31,14 @@ public class CountryRepository {
         list.add(new Country("+61", "audio/AU.wav"));
         list.add(new Country("+971", "audio/AE.wav"));
 
-        list.sort((a, b) -> Integer.compare(b.getDialCode().length(), a.getDialCode().length()));
+        list.sort((a, b) -> Integer.compare(b.dialCode().length(), a.dialCode().length()));
         this.countryList = Collections.unmodifiableList(list);
     }
 
     public String getSongPath(String dialCode) {
         String resolved = resolveDialCode(dialCode);
         return findByDialCode(resolved)
-                .map(Country::getSongPath)
+                .map(Country::songPath)
                 .orElse("audio/IN.wav");
     }
 
@@ -51,10 +51,12 @@ public class CountryRepository {
             return Optional.empty();
         }
         String cleaned = number.trim().replace(" ", "");
-        if (!cleaned.startsWith("+")) {
+        if (cleaned.startsWith("00")) {
+            cleaned = "+" + cleaned.substring(2);
+        } else if (!cleaned.startsWith("+")) {
             cleaned = "+" + cleaned;
         }
-        return findByDialCode(cleaned).map(Country::getDialCode);
+        return findByDialCode(cleaned).map(Country::dialCode);
     }
 
     public String resolveDialCode(String dialCode) {
@@ -68,8 +70,11 @@ public class CountryRepository {
     }
 
     private Optional<Country> findByDialCode(String dialCode) {
-        return countryList.stream()
-                .filter(c -> dialCode.equals(c.getDialCode()) || dialCode.startsWith(c.getDialCode()))
-                .findFirst();
+        for (Country c : countryList) {
+            if (dialCode.equals(c.dialCode()) || dialCode.startsWith(c.dialCode())) {
+                return Optional.of(c);
+            }
+        }
+        return Optional.empty();
     }
 }

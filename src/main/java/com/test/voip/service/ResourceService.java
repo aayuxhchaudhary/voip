@@ -1,6 +1,7 @@
 package com.test.voip.service;
 
 import com.test.voip.repository.CountryRepository;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -42,27 +43,27 @@ public class ResourceService {
         String resolved = countryRepository.resolveDialCode(dialCode);
         log.info("Playing RBT for '{}' [{}]", resolved, callId);
 
-        try {
-            InputStream in = getAudioStream(dialCode);
+        try (InputStream in = getAudioStream(dialCode)) {
             if (in == null) {
                 log.warn("Audio file missing for dial code: {}", dialCode);
                 return;
             }
 
-            BufferedInputStream bufferedIn = new BufferedInputStream(in);
-            AudioInputStream audioIn = AudioSystem.getAudioInputStream(bufferedIn);
+            try (BufferedInputStream bufferedIn = new BufferedInputStream(in);
+                 AudioInputStream audioIn = AudioSystem.getAudioInputStream(bufferedIn)) {
 
-            Clip clip = AudioSystem.getClip();
-            clip.open(audioIn);
-            clip.addLineListener(event -> {
-                if (event.getType() == LineEvent.Type.STOP) {
-                    clip.close();
-                    activeClips.remove(callId);
-                }
-            });
+                Clip clip = AudioSystem.getClip();
+                clip.open(audioIn);
+                clip.addLineListener(event -> {
+                    if (event.getType() == LineEvent.Type.STOP) {
+                        clip.close();
+                        activeClips.remove(callId);
+                    }
+                });
 
-            activeClips.put(callId, clip);
-            clip.start();
+                activeClips.put(callId, clip);
+                clip.start();
+            }
         } catch (Exception e) {
             log.warn("Local speaker playback unavailable: {}", e.getMessage());
         }
@@ -82,6 +83,7 @@ public class ResourceService {
         }
     }
 
+    @PreDestroy
     public void stopAll() {
         activeClips.forEach((id, clip) -> {
             try { clip.stop(); clip.close(); } catch (Exception ignored) { }

@@ -2,7 +2,9 @@ package com.test.voip.controller;
 
 import com.test.voip.dto.CallRequestDto;
 import com.test.voip.dto.CallResponseDto;
+import com.test.voip.entity.CallDetail;
 import com.test.voip.exception.SipCallException;
+import com.test.voip.service.CallDetailService;
 import com.test.voip.service.SipCallService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -20,6 +23,7 @@ public class SipCallController {
     private static final Logger log = LoggerFactory.getLogger(SipCallController.class);
 
     private final SipCallService sipCallService;
+    private final CallDetailService callDetailService;
 
     @Value("${sip.server.host:127.0.0.1}")
     private String serverHost;
@@ -45,8 +49,19 @@ public class SipCallController {
     @Value("${sip.message.hangup-not-found:No active call found}")
     private String hangupNotFoundMessage = "No active call found";
 
-    public SipCallController(SipCallService sipCallService) {
+    public SipCallController(SipCallService sipCallService, CallDetailService callDetailService) {
         this.sipCallService = sipCallService;
+        this.callDetailService = callDetailService;
+    }
+
+    @GetMapping("/details")
+    public ResponseEntity<List<CallDetail>> getAllCallDetails() {
+        return ResponseEntity.ok(callDetailService.getAllCallDetails());
+    }
+
+    @GetMapping("/details/{callId}")
+    public ResponseEntity<CallDetail> getCallDetail(@PathVariable String callId) {
+        return ResponseEntity.ok(callDetailService.getCallDetailByCallId(callId));
     }
 
     @PostMapping

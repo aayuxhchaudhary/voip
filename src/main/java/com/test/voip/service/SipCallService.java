@@ -1,5 +1,6 @@
-	package com.test.voip.service;
+package com.test.voip.service;
 
+import com.test.voip.entity.BaseAudioRecord;
 import com.test.voip.repository.CountryRepository;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -58,6 +59,7 @@ public class SipCallService implements SipListener {
     private final ResourceService resourceService;
     private final AudioService audioService;
     private final CountryRepository countryRepository;
+    private final CallDetailService callDetailService;
 
     private final Map<String, CallContext> activeCalls = new ConcurrentHashMap<>();
 
@@ -74,11 +76,13 @@ public class SipCallService implements SipListener {
             RtpService rtpService,
             ResourceService resourceService,
             AudioService audioService,
-            CountryRepository countryRepository) {
+            CountryRepository countryRepository,
+            CallDetailService callDetailService) {
         this.rtpService = rtpService;
         this.resourceService = resourceService;
         this.audioService = audioService;
         this.countryRepository = countryRepository;
+        this.callDetailService = callDetailService;
     }
 
     @PostConstruct
@@ -174,15 +178,16 @@ public class SipCallService implements SipListener {
         );
         inviteRequest.addHeader(contactHeader);
 
-        String sdp = "v=0\r\no=" + caller + " 123456 654321 IN IP4 " + contactIp
+        String sdpCaller = (caller != null && !caller.isBlank()) ? caller.trim().replaceAll("\\s+", "_") : "user";
+        String sdp = "v=0\r\no=" + sdpCaller + " 123456 654321 IN IP4 " + contactIp
                 + "\r\ns=Talk\r\nc=IN IP4 " + contactIp
                 + "\r\nt=0 0\r\nm=audio " + rtpLocalPort + " RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
         inviteRequest.setContent(sdp.getBytes(StandardCharsets.UTF_8), sdpContentType);
 
         String dialCode = countryRepository.resolveDialCode(caller, callee);
-        activeCalls.put(callId, new CallContext(callId, targetIp, targetPort, dialCode));
-
         ClientTransaction clientTransaction = sipProvider.getNewClientTransaction(inviteRequest);
+        activeCalls.put(callId, new CallContext(targetIp, targetPort, dialCode, clientTransaction));
+        callDetailService.recordDial(callId, caller, callee);
         clientTransaction.sendRequest();
 
         log.info("Dispatched INVITE Call-ID: {} to {}@{}:{} [dialCode={}]", callId, callee, targetIp, targetPort, dialCode);
@@ -204,12 +209,27 @@ public class SipCallService implements SipListener {
                 ClientTransaction clientTransaction = sipProvider.getNewClientTransaction(byeRequest);
                 context.dialog.sendRequest(clientTransaction);
                 log.info("Sent BYE request for Call-ID: {}", callId);
+                callDetailService.recordHangup(callId, "BYE");
+            } else if (context.inviteTransaction != null) {
+                TransactionState state = context.inviteTransaction.getState();
+                if (state == TransactionState.CALLING || state == TransactionState.PROCEEDING) {
+                    Request cancelRequest = context.inviteTransaction.createCancel();
+                    ClientTransaction cancelTransaction = sipProvider.getNewClientTransaction(cancelRequest);
+                    cancelTransaction.sendRequest();
+                    log.info("Sent CANCEL request for Call-ID: {}", callId);
+                    callDetailService.recordHangup(callId, "CANCEL");
+                } else {
+                    callDetailService.recordHangup(callId, "LOCAL_HANGUP");
+                }
+            } else {
+                callDetailService.recordHangup(callId, "LOCAL_HANGUP");
             }
 
             activeCalls.remove(callId);
             return true;
         } catch (Exception e) {
             log.error("Error hanging up call {}: {}", callId, e.getMessage(), e);
+            callDetailService.recordHangup(callId, "HANGUP_ERROR");
             activeCalls.remove(callId);
             return false;
         }
@@ -223,8 +243,12 @@ public class SipCallService implements SipListener {
         String callId = (callIdHeader != null) ? callIdHeader.getCallId() : "";
 
         CallContext context = activeCalls.get(callId);
-        if (context != null && responseEvent.getDialog() != null) {
-            context.dialog = responseEvent.getDialog();
+        Dialog dialog = responseEvent.getDialog();
+        if (dialog == null && responseEvent.getClientTransaction() != null) {
+            dialog = responseEvent.getClientTransaction().getDialog();
+        }
+        if (context != null && dialog != null) {
+            context.dialog = dialog;
         }
 
         if (statusCode == Response.TRYING) {
@@ -232,12 +256,22 @@ public class SipCallService implements SipListener {
 
         } else if (statusCode == Response.RINGING) {
             log.info("180 Ringing | Call-ID: {}", callId);
+            callDetailService.recordRinging(callId, statusCode, response.getReasonPhrase());
             if (rbtEnabled && context != null) {
                 resourceService.playResourceSong(callId, context.dialCode);
             }
 
         } else if (statusCode == Response.OK) {
             log.info("200 OK (answered) | Call-ID: {}", callId);
+            if (context != null && context.answered) {
+                sendAck(responseEvent, response);
+                return;
+            }
+            if (context != null) {
+                context.answered = true;
+            }
+
+            callDetailService.recordAnswer(callId);
             resourceService.stopSong(callId);
 
             RemoteMediaEndpoint endpoint = parseRemoteSdp(response.getRawContent(),
@@ -245,6 +279,7 @@ public class SipCallService implements SipListener {
             log.info("Remote RTP endpoint: {}:{} | Call-ID: {}", endpoint.ip, endpoint.port, callId);
 
             audioService.startRecording(callId, "FULL_CALL", 8000, 1, 8, false, false);
+            audioService.startRecording(callId, "CALLEE", 8000, 1, 8, false, false);
 
             if (context != null) {
                 rtpService.startRtpStream(callId, context.dialCode, endpoint.ip, endpoint.port);
@@ -253,8 +288,9 @@ public class SipCallService implements SipListener {
 
             sendAck(responseEvent, response);
 
-        } else if (statusCode >= 400) {
+        } else if (statusCode >= 300) {
             log.warn("{} {} | Call-ID: {}", statusCode, response.getReasonPhrase(), callId);
+            callDetailService.recordFailure(callId, statusCode, response.getReasonPhrase());
             cleanupCallMedia(callId);
             activeCalls.remove(callId);
 
@@ -272,7 +308,22 @@ public class SipCallService implements SipListener {
 
         log.info("Incoming SIP {} {} | Call-ID: {}", method, request.getRequestURI(), callId);
 
+        if (Request.OPTIONS.equalsIgnoreCase(method)) {
+            try {
+                ServerTransaction serverTransaction = requestEvent.getServerTransaction();
+                if (serverTransaction == null) {
+                    serverTransaction = sipProvider.getNewServerTransaction(request);
+                }
+                serverTransaction.sendResponse(messageFactory.createResponse(Response.OK, request));
+                log.info("200 OK to OPTIONS | Call-ID: {}", callId);
+            } catch (Exception e) {
+                log.warn("Failed to respond to OPTIONS: {}", e.getMessage());
+            }
+            return;
+        }
+
         if (Request.BYE.equalsIgnoreCase(method)) {
+            callDetailService.recordHangup(callId, "BYE");
             cleanupCallMedia(callId);
             activeCalls.remove(callId);
 
@@ -292,6 +343,18 @@ public class SipCallService implements SipListener {
     @Override
     public void processTimeout(TimeoutEvent timeoutEvent) {
         log.warn("SIP transaction timeout");
+        Transaction tx = timeoutEvent.isServerTransaction()
+                ? timeoutEvent.getServerTransaction()
+                : timeoutEvent.getClientTransaction();
+        if (tx != null && tx.getRequest() != null) {
+            CallIdHeader callIdHeader = (CallIdHeader) tx.getRequest().getHeader(CallIdHeader.NAME);
+            if (callIdHeader != null) {
+                String callId = callIdHeader.getCallId();
+                callDetailService.recordTimeout(callId);
+                cleanupCallMedia(callId);
+                activeCalls.remove(callId);
+            }
+        }
     }
 
     @Override
@@ -303,7 +366,13 @@ public class SipCallService implements SipListener {
     public void processTransactionTerminated(TransactionTerminatedEvent event) { }
 
     @Override
-    public void processDialogTerminated(DialogTerminatedEvent event) { }
+    public void processDialogTerminated(DialogTerminatedEvent event) {
+        if (event.getDialog() != null && event.getDialog().getCallId() != null) {
+            String callId = event.getDialog().getCallId().getCallId();
+            cleanupCallMedia(callId);
+            activeCalls.remove(callId);
+        }
+    }
 
     @PreDestroy
     public void stop() {
@@ -331,7 +400,11 @@ public class SipCallService implements SipListener {
     private void cleanupCallMedia(String callId) {
         resourceService.stopSong(callId);
         rtpService.stopRtp(callId);
-        audioService.stopRecording(callId, "FULL_CALL");
+        BaseAudioRecord fullRecord = audioService.stopRecording(callId, "FULL_CALL");
+        BaseAudioRecord calleeRecord = audioService.stopRecording(callId, "CALLEE");
+        String fullPath = (fullRecord != null) ? fullRecord.getFilePath() : null;
+        String calleePath = (calleeRecord != null) ? calleeRecord.getFilePath() : null;
+        callDetailService.recordMediaPaths(callId, fullPath, calleePath);
     }
 
     private void sendAck(ResponseEvent responseEvent, Response response) {
@@ -387,17 +460,18 @@ public class SipCallService implements SipListener {
     private record RemoteMediaEndpoint(String ip, int port) { }
 
     private static class CallContext {
-        final String callId;
         final String targetIp;
         final int targetPort;
         final String dialCode;
         volatile Dialog dialog;
+        volatile ClientTransaction inviteTransaction;
+        volatile boolean answered;
 
-        CallContext(String callId, String targetIp, int targetPort, String dialCode) {
-            this.callId = callId;
+        CallContext(String targetIp, int targetPort, String dialCode, ClientTransaction inviteTransaction) {
             this.targetIp = targetIp;
             this.targetPort = targetPort;
             this.dialCode = dialCode;
+            this.inviteTransaction = inviteTransaction;
         }
     }
 }
